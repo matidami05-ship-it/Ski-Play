@@ -216,7 +216,7 @@ final class StreamSession: ObservableObject {
             let rtt = Double(sp_session_rtt_us(h)) / 1000
             let loss = sp_session_packet_loss(h) * 100
             let mbps = sp_session_measured_bitrate(h)
-            self.stats = String(format: "%d fps · %.0f ms · %.1f Mbps · loss %.1f%% · dropped %d",
+            self.stats = String(format: "%ld fps · %.0f ms · %.1f Mbps · loss %.1f%% · dropped %ld",
                                 fps, rtt, mbps, loss, Int(self.lostFrames))
         }
     }

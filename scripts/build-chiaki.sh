@@ -22,7 +22,7 @@ cd "$WORK"
 # and the protobuf module that nanopb's generator needs.
 if [ ! -x "$WORK/venv/bin/cmake" ]; then
   python3 -m venv "$WORK/venv"
-  "$WORK/venv/bin/pip" install -q "cmake>=3.28,<4" "protobuf<6"
+  "$WORK/venv/bin/pip" install -q "cmake>=3.28,<4" protobuf
 fi
 export PATH="$WORK/venv/bin:$PATH"
 command -v protoc || brew install protobuf
