@@ -112,7 +112,7 @@ cmake -S chiaki-ng -B chiaki-ng/build-ios "${IOS_CMAKE[@]}" \
   -DPROTOC="$(command -v protoc)" -DPYTHON_EXECUTABLE="$WORK/venv/bin/python3" \
   -DCURL_USE_OPENSSL=ON -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF -DUSE_LIBIDN2=OFF \
   -DCURL_ZLIB=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DUSE_NGHTTP2=OFF -DCURL_DISABLE_LDAP=ON \
-  -DCURL_CA_BUNDLE=none -DCURL_CA_PATH=none -DENABLE_UNIX_SOCKETS=OFF
+  -DCURL_CA_BUNDLE=none -DCURL_CA_PATH=none -DCURL_CA_FALLBACK=ON -DENABLE_UNIX_SOCKETS=OFF
 cmake --build chiaki-ng/build-ios --target chiaki-lib -j"$JOBS"
 echo "::endgroup::"
 

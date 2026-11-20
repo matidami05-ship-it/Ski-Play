@@ -6,6 +6,10 @@ struct SkiPlayApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
+        // Root certificates for the PlayStation Network connection (used for playing away from home).
+        if let ca = Bundle.main.path(forResource: "cacert", ofType: "pem") {
+            setenv("SSL_CERT_FILE", ca, 1)
+        }
         Chiaki.start()
     }
 

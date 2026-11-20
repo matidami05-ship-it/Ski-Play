@@ -39,6 +39,8 @@ struct SignInView: View {
                                 await MainActor.run {
                                     store.accountID = result.id
                                     store.onlineID = result.onlineID
+                                    store.psnTokens = result.tokens
+                                    Task { await PSNDevices.sync() }
                                     dismiss()
                                 }
                             } catch {

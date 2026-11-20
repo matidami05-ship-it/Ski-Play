@@ -45,6 +45,12 @@ jobs:
           path: Vendor
           key: chiaki-ios-${{ hashFiles('scripts/build-chiaki.sh') }}
 
+      - name: Root certificates for PlayStation Network
+        run: |
+          mkdir -p SkiPlay/Resources
+          curl -fsSL https://curl.se/ca/cacert.pem -o SkiPlay/Resources/cacert.pem || cp /etc/ssl/cert.pem SkiPlay/Resources/cacert.pem
+          grep -c "BEGIN CERTIFICATE" SkiPlay/Resources/cacert.pem
+
       - name: Generate Xcode project
         run: |
           brew install xcodegen

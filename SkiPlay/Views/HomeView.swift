@@ -16,7 +16,7 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    if store.accountID == nil {
+                    if store.accountID == nil || store.psnTokens == nil {
                         signInCard
                     }
                     consolesSection
@@ -39,18 +39,24 @@ struct HomeView: View {
                 }
             }
         }
-        .onAppear { discovery.start() }
+        .onAppear {
+            discovery.start()
+            Task { await PSNDevices.sync() }
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { discovery.start(); discovery.scan(full: true) }
+            if phase == .active {
+                discovery.start(); discovery.scan(full: true)
+                Task { await PSNDevices.sync() }
+            }
             if phase == .background && streaming == nil { discovery.stop() }
         }
-        .sheet(isPresented: $showSignIn) { SignInView() }
-        .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showSignIn) { SignInView().environmentObject(store) }
+        .sheet(isPresented: $showSettings) { SettingsView().environmentObject(store) }
         .sheet(item: $linkTarget) { target in
-            LinkView(target: target) { linkTarget = nil }
+            LinkView(target: target) { linkTarget = nil }.environmentObject(store)
         }
         .fullScreenCover(item: $streaming) { session in
-            StreamView(session: session) { streaming = nil }
+            StreamView(session: session) { streaming = nil }.environmentObject(store)
         }
         .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
@@ -66,9 +72,12 @@ struct HomeView: View {
 
     private var signInCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Sign in to PlayStation", systemImage: "person.crop.circle.badge.checkmark")
+            Label(store.accountID == nil ? "Sign in to PlayStation" : "Sign in again to play away from home",
+                  systemImage: store.accountID == nil ? "person.crop.circle.badge.checkmark" : "globe")
                 .font(.headline)
-            Text("Your console needs your PlayStation account to link with this phone. You only do this once.")
+            Text(store.accountID == nil
+                 ? "Your console needs your PlayStation account to link with this phone, and to play from anywhere. You only do this once."
+                 : "One more sign-in lets you play your PS5 from anywhere — like at your parents' house.")
                 .font(.subheadline).foregroundStyle(.secondary)
             Button { showSignIn = true } label: {
                 Text("Sign In").frame(maxWidth: .infinity)
@@ -152,6 +161,7 @@ struct HomeView: View {
                 Tip("cable.connector", "Plug the PS5 into the router with an Ethernet cable — the biggest fix for lag.")
                 Tip("wifi", "Keep the phone on 5 GHz Wi-Fi (not 2.4 GHz), close to the router.")
                 Tip("slider.horizontal.3", "Still choppy? Settings › Quality › Smooth.")
+                Tip("globe", "Away from home, your home internet's upload speed matters most. If it stutters, set Away quality to Smooth.")
                 Tip("moon.zzz", "PS5 › Settings › System › Power Saving › Features in Rest Mode › turn on \"Stay Connected to the Internet\" and \"Enable Turning On PS5 from Network\" so the app can wake it.")
             }
             .padding(.top, 8)
@@ -226,10 +236,11 @@ struct ConsoleCard: View {
             }
             HStack {
                 Button(action: play) {
-                    Label(status?.state == .rest ? "Wake & Play" : "Play", systemImage: "play.fill")
+                    Label(playTitle, systemImage: status == nil && console.canPlayRemotely ? "globe" : "play.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(status == nil && !console.canPlayRemotely && !console.isLinkedLocally)
                 if status?.state == .rest {
                     Button(action: wake) { Image(systemName: "power") }
                         .buttonStyle(.bordered)
@@ -240,7 +251,13 @@ struct ConsoleCard: View {
         .background(Theme.card, in: RoundedRectangle(cornerRadius: 16))
     }
 
+    private var playTitle: String {
+        if status == nil && console.canPlayRemotely { return "Play over Internet" }
+        return status?.state == .rest ? "Wake & Play" : "Play"
+    }
+
     private var color: Color {
+        if status == nil && console.canPlayRemotely { return Theme.accent }
         switch status?.state {
         case .on: return Theme.on
         case .rest: return Theme.rest
@@ -252,7 +269,9 @@ struct ConsoleCard: View {
         switch status?.state {
         case .on: return "On · \(status?.address ?? console.host)"
         case .rest: return "Rest mode · \(status?.address ?? console.host)"
-        default: return "Not found on this Wi-Fi · \(console.host)"
+        default:
+            if console.canPlayRemotely { return "Away from home · plays through PlayStation Network" }
+            return "Not found on this Wi-Fi · \(console.host)"
         }
     }
 }

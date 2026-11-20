@@ -6,7 +6,7 @@ import UIKit
 /// controller input back.
 final class StreamSession: ObservableObject {
     enum Phase: Equatable {
-        case waking, connecting, streaming, needsPIN(incorrect: Bool), ended(String?)
+        case waking, connecting, reachingRemote, streaming, needsPIN(incorrect: Bool), ended(String?)
     }
 
     @Published var phase: Phase = .connecting
@@ -22,6 +22,8 @@ final class StreamSession: ObservableObject {
     private var lastFrames = 0
     private var lostFrames: Int32 = 0
     private let hevc: Bool
+    private(set) var remote = false
+    private var canceled = false
 
     init(console: Console) {
         self.console = console
@@ -49,6 +51,14 @@ final class StreamSession: ObservableObject {
     func start() {
         let found = Discovery.shared.status(for: console)
         let host = found?.address ?? console.host
+        if found == nil && console.canPlayRemotely {
+            startRemote()
+            return
+        }
+        if found == nil && !console.isLinkedLocally {
+            phase = .ended("This console can only be reached over the internet, but it isn't set up for that yet. Sign in to PlayStation again in Settings.")
+            return
+        }
         if found?.state == .rest {
             phase = .waking
             wake(host: host)
@@ -84,16 +94,33 @@ final class StreamSession: ObservableObject {
         }
     }
 
-    private func connect(host: String) {
-        guard handle == nil else { return }
-        phase = .connecting
+    /// Away from home: reach the console through PlayStation Network.
+    private func startRemote() {
+        remote = true
+        phase = .reachingRemote
+        Task { @MainActor in
+            do {
+                let token = try await PSNAuth.validAccessToken()
+                guard !canceled else { return }
+                connect(host: "", remoteToken: token)
+            } catch {
+                phase = .ended(error.localizedDescription)
+            }
+        }
+    }
+
+    private func connect(host: String, remoteToken: String? = nil) {
+        guard handle == nil, !canceled else { return }
+        phase = remoteToken == nil ? .connecting : .reachingRemote
         let store = AppStore.shared
+        let quality = remoteToken == nil ? store.quality : store.awayQuality
         var config = SPSessionConfig()
         config.ps5 = console.ps5
-        config.width = Int32(store.quality.width)
-        config.height = Int32(store.quality.height)
+        config.width = Int32(quality.width)
+        config.height = Int32(quality.height)
         config.fps = Int32(store.fps)
-        config.bitrate = Int32(store.quality.bitrate)
+        config.bitrate = Int32(quality.bitrate)
+        config.port_guessing = store.portGuessing
         config.codec = hevc ? Int32(SP_CODEC_H265) : Int32(SP_CODEC_H264)
         config.dualsense = true
         config.packet_loss_max = 0.05
@@ -152,11 +179,24 @@ final class StreamSession: ObservableObject {
             guard let pcm else { return }
             StreamSession.from(user).audio.push(pcm, frames: Int(samples))
         }
+        cb.holepunch = { user, finished in
+            let me = StreamSession.from(user)
+            if !finished { DispatchQueue.main.async { if me.phase != .streaming { me.phase = .reachingRemote } } }
+        }
 
         var err: Int32 = 0
+        let duid = console.psnDUID ?? ""
         let newHandle: OpaquePointer? = host.withCString { cHost in
-            config.host = cHost
-            return sp_session_new(&config, cb, &err)
+            (remoteToken ?? "").withCString { cToken in
+                duid.withCString { cDuid in
+                    config.host = cHost
+                    if remoteToken != nil {
+                        config.psn_token = cToken
+                        config.remote_duid = cDuid
+                    }
+                    return sp_session_new(&config, cb, &err)
+                }
+            }
         }
         guard let newHandle else {
             Unmanaged.passUnretained(self).release()
@@ -164,6 +204,28 @@ final class StreamSession: ObservableObject {
             return
         }
         handle = newHandle
+        if remoteToken != nil {
+            // Reaching the console through PSN takes a few seconds and blocks, so do it off the main thread.
+            DispatchQueue.global(qos: .userInitiated).async {
+                let r = sp_session_connect_remote(newHandle)
+                DispatchQueue.main.async {
+                    if self.canceled {
+                        self.teardown()
+                    } else if r != 0 {
+                        let detail = Log.shared.recentErrors(3)
+                        self.phase = .ended("Couldn't reach your console over the internet (\(Chiaki.errorString(r))). Make sure it's on or in rest mode with \"Stay Connected to the Internet\" turned on. If you're on a phone hotspot, turn on Hotspot mode in Settings." + (detail.isEmpty ? "" : "\n\n" + detail))
+                        self.teardown()
+                    } else {
+                        self.beginStreaming(newHandle)
+                    }
+                }
+            }
+        } else {
+            beginStreaming(newHandle)
+        }
+    }
+
+    private func beginStreaming(_ newHandle: OpaquePointer) {
         let startErr = sp_session_start(newHandle)
         if startErr != 0 {
             phase = .ended("Couldn't connect: \(Chiaki.errorString(startErr))")
@@ -185,11 +247,15 @@ final class StreamSession: ObservableObject {
     }
 
     func stop() {
+        canceled = true
         UIApplication.shared.isIdleTimerDisabled = false
         input.stop()
         audio.stop()
         statsTimer?.invalidate()
         if let handle {
+            if phase == .reachingRemote && remote {
+                sp_session_cancel_remote(handle) // the connect thread finishes and tears down
+            }
             sp_session_stop(handle) // chiaki answers with a quit event, which tears down
         } else if case .ended = phase {} else {
             phase = .ended(nil)

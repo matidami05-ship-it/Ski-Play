@@ -74,6 +74,10 @@ struct StreamView: View {
             StatusCard(title: "Waking up \(session.console.displayName)…", detail: "This can take up to 30 seconds.", spinner: true, close: cancel)
         case .connecting:
             StatusCard(title: "Connecting to \(session.console.displayName)…", detail: nil, spinner: true, close: cancel)
+        case .reachingRemote:
+            StatusCard(title: "Reaching \(session.console.displayName) over the internet…",
+                       detail: "This takes 5–20 seconds. A console in rest mode wakes up on its own.",
+                       spinner: true, close: cancel)
         case .needsPIN(let incorrect):
             VStack(spacing: 12) {
                 Text(incorrect ? "Wrong PIN — try again" : "Enter your console's Remote Play PIN").font(.headline)

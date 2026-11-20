@@ -10,6 +10,7 @@
 #include <chiaki/regist.h>
 #include <chiaki/controller.h>
 #include <chiaki/opusdecoder.h>
+#include <chiaki/remote/holepunch.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -261,6 +262,9 @@ struct sp_session_t
 	ChiakiOpusDecoder opus;
 	SPCallbacks cb;
 	bool started;
+	ChiakiHolepunchSession holepunch;
+	char remote_duid[65];
+	bool ps5;
 };
 
 static void session_event_cb(ChiakiEvent *event, void *user)
@@ -282,6 +286,9 @@ static void session_event_cb(ChiakiEvent *event, void *user)
 			break;
 		case CHIAKI_EVENT_RUMBLE:
 			if(s->cb.rumble) s->cb.rumble(s->cb.user, event->rumble.left, event->rumble.right);
+			break;
+		case CHIAKI_EVENT_HOLEPUNCH:
+			if(s->cb.holepunch) s->cb.holepunch(s->cb.user, event->data_holepunch.finished);
 			break;
 		default:
 			break;
@@ -317,6 +324,7 @@ SPSession *sp_session_new(const SPSessionConfig *config, SPCallbacks callbacks, 
 		return NULL;
 	}
 	s->cb = callbacks;
+	s->ps5 = config->ps5;
 
 	ChiakiConnectInfo info;
 	memset(&info, 0, sizeof(info));
@@ -337,12 +345,29 @@ SPSession *sp_session_new(const SPSessionConfig *config, SPCallbacks callbacks, 
 	info.auto_regist = false;
 	info.holepunch_session = NULL;
 	info.rudp_sock = NULL;
+	if(config->psn_token && config->remote_duid)
+	{
+		s->holepunch = chiaki_holepunch_session_init(config->psn_token, &global_log);
+		if(!s->holepunch)
+		{
+			free(s);
+			if(err_out) *err_out = CHIAKI_ERR_UNINITIALIZED;
+			return NULL;
+		}
+		if(config->port_guessing)
+			chiaki_holepunch_session_force_port_guessing(s->holepunch, true);
+		strncpy(s->remote_duid, config->remote_duid, sizeof(s->remote_duid) - 1);
+		info.holepunch_session = s->holepunch;
+		info.host = "";
+	}
 	info.packet_loss_max = config->packet_loss_max > 0 ? config->packet_loss_max : 0.05;
 	info.enable_idr_on_fec_failure = true;
 
 	ChiakiErrorCode err = chiaki_session_init(&s->session, &info, &global_log);
 	if(err != CHIAKI_ERR_SUCCESS)
 	{
+		if(s->holepunch)
+			chiaki_holepunch_session_fini(s->holepunch);
 		free(s);
 		if(err_out) *err_out = err;
 		return NULL;
@@ -359,6 +384,66 @@ SPSession *sp_session_new(const SPSessionConfig *config, SPCallbacks callbacks, 
 
 	if(err_out) *err_out = CHIAKI_ERR_SUCCESS;
 	return s;
+}
+
+static int hexval(char c)
+{
+	if(c >= '0' && c <= '9') return c - '0';
+	if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1;
+}
+
+int sp_session_connect_remote(SPSession *s)
+{
+	if(!s || !s->holepunch)
+		return CHIAKI_ERR_UNINITIALIZED;
+	uint8_t duid[32];
+	size_t len = strlen(s->remote_duid);
+	if(len != 64)
+		return CHIAKI_ERR_INVALID_DATA;
+	for(size_t i = 0; i < 32; i++)
+	{
+		int hi = hexval(s->remote_duid[2 * i]), lo = hexval(s->remote_duid[2 * i + 1]);
+		if(hi < 0 || lo < 0)
+			return CHIAKI_ERR_INVALID_DATA;
+		duid[i] = (uint8_t)((hi << 4) | lo);
+	}
+	ChiakiHolepunchConsoleType type = s->ps5 ? CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS5 : CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS4;
+	ChiakiErrorCode err = chiaki_holepunch_upnp_discover(s->holepunch);
+	if(err != CHIAKI_ERR_SUCCESS)
+		CHIAKI_LOGW(&global_log, "UPnP discovery failed, continuing without it");
+	err = chiaki_holepunch_session_create(s->holepunch);
+	if(err != CHIAKI_ERR_SUCCESS)
+	{
+		CHIAKI_LOGE(&global_log, "PSN: couldn't create session: %s", chiaki_error_string(err));
+		return err;
+	}
+	err = holepunch_session_create_offer(s->holepunch);
+	if(err != CHIAKI_ERR_SUCCESS)
+	{
+		CHIAKI_LOGE(&global_log, "PSN: couldn't create offer: %s", chiaki_error_string(err));
+		return err;
+	}
+	err = chiaki_holepunch_session_start(s->holepunch, duid, type);
+	if(err != CHIAKI_ERR_SUCCESS)
+	{
+		CHIAKI_LOGE(&global_log, "PSN: console didn't start the session: %s", chiaki_error_string(err));
+		return err;
+	}
+	err = chiaki_holepunch_session_punch_hole(s->holepunch, CHIAKI_HOLEPUNCH_PORT_TYPE_CTRL);
+	if(err != CHIAKI_ERR_SUCCESS)
+	{
+		CHIAKI_LOGE(&global_log, "PSN: couldn't reach the console through the network: %s", chiaki_error_string(err));
+		return err;
+	}
+	return CHIAKI_ERR_SUCCESS;
+}
+
+void sp_session_cancel_remote(SPSession *s)
+{
+	if(s && s->holepunch)
+		chiaki_holepunch_main_thread_cancel(s->holepunch, true);
 }
 
 int sp_session_start(SPSession *s)
@@ -454,4 +539,41 @@ double sp_session_packet_loss(SPSession *s)
 double sp_session_measured_bitrate(SPSession *s)
 {
 	return s ? s->session.stream_connection.measured_bitrate : 0;
+}
+
+// MARK: - PlayStation Network
+
+int sp_generate_duid(char *out, size_t out_size)
+{
+	size_t size = out_size;
+	return (int)chiaki_holepunch_generate_client_device_uid(out, &size);
+}
+
+int sp_psn_list_devices(const char *psn_token, SPPsnDevice **devices_out)
+{
+	*devices_out = NULL;
+	ChiakiHolepunchDeviceInfo *devices = NULL;
+	size_t count = 0;
+	ChiakiErrorCode err = chiaki_holepunch_list_devices(psn_token, CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS5, &devices, &count, &global_log);
+	if(err != CHIAKI_ERR_SUCCESS)
+		return -(int)err;
+	SPPsnDevice *out = calloc(count ? count : 1, sizeof(SPPsnDevice));
+	if(!out)
+	{
+		chiaki_holepunch_free_device_list(&devices);
+		return -(int)CHIAKI_ERR_MEMORY;
+	}
+	for(size_t i = 0; i < count; i++)
+	{
+		memcpy(out[i].name, devices[i].device_name, sizeof(out[i].name));
+		out[i].name[sizeof(out[i].name) - 1] = '\0';
+		for(size_t b = 0; b < sizeof(devices[i].device_uid); b++)
+			snprintf(out[i].duid + 2 * b, 3, "%02x", devices[i].device_uid[b]);
+		out[i].ps5 = devices[i].type == CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS5;
+		out[i].remoteplay_enabled = devices[i].remoteplay_enabled;
+	}
+	if(devices)
+		chiaki_holepunch_free_device_list(&devices);
+	*devices_out = out;
+	return (int)count;
 }

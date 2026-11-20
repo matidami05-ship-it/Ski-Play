@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State private var showLog = false
+    @State private var showSignIn = false
 
     var body: some View {
         NavigationStack {
@@ -26,6 +27,19 @@ struct SettingsView: View {
                     Text("Lower quality needs less Wi-Fi and lags less. Start with Balanced; drop to Smooth if the picture stutters.")
                 }
 
+                Section {
+                    Picker("Away quality", selection: $store.awayQuality) {
+                        ForEach(StreamQuality.allCases) { q in Text(q.title).tag(q) }
+                    }
+                    Toggle("Hotspot / cellular mode", isOn: $store.portGuessing)
+                } header: {
+                    Text("Playing away from home")
+                } footer: {
+                    Text(store.psnTokens == nil
+                         ? "To play away from home, sign in to PlayStation below. Your PS5 needs \"Stay Connected to the Internet\" turned on in rest mode."
+                         : "Ready. Consoles on your PlayStation account can be played from anywhere. Turn on Hotspot mode if connecting fails on a phone hotspot or cellular.")
+                }
+
                 Section("Video") {
                     Picker("Frame rate", selection: $store.fps) {
                         Text("60 fps").tag(60)
@@ -44,12 +58,16 @@ struct SettingsView: View {
                     if let id = store.accountIDBase64 {
                         LabeledContent("Online ID", value: store.onlineID ?? "—")
                         LabeledContent("Account ID", value: id).font(.caption.monospaced())
+                        if store.psnTokens == nil {
+                            Button("Sign In Again (for playing away)") { showSignIn = true }
+                        }
                         Button("Sign Out", role: .destructive) {
                             store.accountID = nil
                             store.onlineID = nil
+                            store.psnTokens = nil
                         }
                     } else {
-                        Text("Not signed in").foregroundStyle(.secondary)
+                        Button("Sign In") { showSignIn = true }
                     }
                 }
 
@@ -63,6 +81,7 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $showLog) { LogView() }
+            .sheet(isPresented: $showSignIn) { SignInView().environmentObject(store) }
         }
     }
 }

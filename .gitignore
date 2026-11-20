@@ -7,3 +7,4 @@ Payload/
 Vendor/
 SkiPlay/Info.plist
 SkiPlay/SkiPlay.entitlements
+SkiPlay/Resources/cacert.pem

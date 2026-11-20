@@ -91,6 +91,10 @@ typedef struct sp_session_config_t
 	int codec;
 	bool dualsense;
 	double packet_loss_max;
+	// Internet play (through PlayStation Network). Leave psn_token NULL for home Wi-Fi play.
+	const char *psn_token;       // fresh OAuth access token
+	const char *remote_duid;     // console's PSN device id (64 hex chars)
+	bool port_guessing;          // helps on phone hotspots / strict NATs
 } SPSessionConfig;
 
 typedef struct sp_callbacks_t
@@ -103,6 +107,7 @@ typedef struct sp_callbacks_t
 	bool (*video)(void *user, const uint8_t *buf, size_t size, int32_t frames_lost, bool frame_recovered);
 	void (*audio_settings)(void *user, uint32_t channels, uint32_t rate);
 	void (*audio_frame)(void *user, const int16_t *pcm, size_t samples_count);
+	void (*holepunch)(void *user, bool finished);
 } SPCallbacks;
 
 typedef struct sp_touch_t
@@ -126,6 +131,11 @@ typedef struct sp_controller_t
 typedef struct sp_session_t SPSession;
 
 SPSession *sp_session_new(const SPSessionConfig *config, SPCallbacks callbacks, int *err_out);
+/// For internet sessions: reaches the console through PlayStation Network and opens the
+/// connection. Blocks for several seconds — call off the main thread, then sp_session_start.
+int sp_session_connect_remote(SPSession *session);
+/// Cancels a running sp_session_connect_remote.
+void sp_session_cancel_remote(SPSession *session);
 int sp_session_start(SPSession *session);
 int sp_session_stop(SPSession *session);
 /// Joins the session thread and frees everything. Call after quit.
@@ -142,6 +152,22 @@ uint64_t sp_session_rtt_us(SPSession *session);
 double sp_session_packet_loss(SPSession *session);
 /// Bitrate in Mbit/s the console is currently sending.
 double sp_session_measured_bitrate(SPSession *session);
+
+// MARK: - PlayStation Network
+
+/// Creates this phone's device id (needed when signing in, for internet play). out: 49 bytes.
+int sp_generate_duid(char *out, size_t out_size);
+
+typedef struct sp_psn_device_t
+{
+	char name[32];
+	char duid[65]; // hex
+	bool ps5;
+	bool remoteplay_enabled;
+} SPPsnDevice;
+
+/// Lists the PS5 consoles on the PSN account. Returns count (>= 0) or -error. Free with free().
+int sp_psn_list_devices(const char *psn_token, SPPsnDevice **devices_out);
 
 #ifdef __cplusplus
 }

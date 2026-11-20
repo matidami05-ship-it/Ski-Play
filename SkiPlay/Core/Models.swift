@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Security
 
 /// A console this phone has been linked with (registered using the PIN from the console).
 struct Console: Codable, Identifiable, Equatable {
@@ -10,6 +11,10 @@ struct Console: Codable, Identifiable, Equatable {
     var registKey: Data       // 16 bytes
     var morning: Data         // 16 bytes ("rp key")
     var hostID: String?       // id reported by discovery (matches MAC)
+    var psnDUID: String? = nil // PlayStation Network device id, for playing away from home
+
+    var isLinkedLocally: Bool { registKey.count == 16 }
+    var canPlayRemotely: Bool { psnDUID?.count == 64 }
 
     var displayName: String { nickname.isEmpty ? (ps5 ? "PS5" : "PS4") : nickname }
 }
@@ -66,6 +71,10 @@ final class AppStore: ObservableObject {
     @Published var showTouchControls: Bool { didSet { save() } }
     @Published var hapticsEnabled: Bool { didSet { save() } }
     @Published var manualHosts: [String] { didSet { save() } }
+    @Published var awayQuality: StreamQuality { didSet { save() } }
+    @Published var portGuessing: Bool { didSet { save() } }
+    @Published var psnTokens: PSNAuth.Tokens? { didSet { saveTokens() } }
+    let deviceUID: String
 
     private let defaults = UserDefaults.standard
     private var loading = true
@@ -82,6 +91,18 @@ final class AppStore: ObservableObject {
         showTouchControls = d.object(forKey: "touch") as? Bool ?? true
         hapticsEnabled = d.object(forKey: "haptics") as? Bool ?? true
         manualHosts = d.stringArray(forKey: "manualHosts") ?? []
+        awayQuality = StreamQuality(rawValue: d.string(forKey: "awayQuality") ?? "") ?? .balanced
+        portGuessing = d.object(forKey: "portGuessing") as? Bool ?? false
+        psnTokens = Keychain.read("psnTokens").flatMap { try? JSONDecoder().decode(PSNAuth.Tokens.self, from: $0) }
+        if let saved = d.string(forKey: "deviceUID"), !saved.isEmpty {
+            deviceUID = saved
+        } else {
+            var buf = [CChar](repeating: 0, count: 64)
+            _ = sp_generate_duid(&buf, buf.count)
+            let fresh = String(cString: buf)
+            d.set(fresh, forKey: "deviceUID")
+            deviceUID = fresh
+        }
         loading = false
     }
 
@@ -97,6 +118,17 @@ final class AppStore: ObservableObject {
         defaults.set(showTouchControls, forKey: "touch")
         defaults.set(hapticsEnabled, forKey: "haptics")
         defaults.set(manualHosts, forKey: "manualHosts")
+        defaults.set(awayQuality.rawValue, forKey: "awayQuality")
+        defaults.set(portGuessing, forKey: "portGuessing")
+    }
+
+    private func saveTokens() {
+        guard !loading else { return }
+        if let psnTokens, let data = try? JSONEncoder().encode(psnTokens) {
+            Keychain.write("psnTokens", data)
+        } else {
+            Keychain.delete("psnTokens")
+        }
     }
 
     var accountIDBase64: String? { accountID?.base64EncodedString() }
@@ -109,7 +141,14 @@ final class AppStore: ObservableObject {
 
     func upsert(_ console: Console) {
         if let i = consoles.firstIndex(where: { $0.id == console.id }) {
-            consoles[i] = console
+            var c = console
+            if c.psnDUID == nil { c.psnDUID = consoles[i].psnDUID }
+            consoles[i] = c
+        } else if let i = consoles.firstIndex(where: { !$0.isLinkedLocally && $0.nickname.caseInsensitiveCompare(console.nickname) == .orderedSame }) {
+            // Same console was added from the PlayStation account: merge them.
+            var c = console
+            c.psnDUID = c.psnDUID ?? consoles[i].psnDUID
+            consoles[i] = c
         } else {
             consoles.append(console)
         }
@@ -123,4 +162,31 @@ final class AppStore: ObservableObject {
 
 extension Data {
     var hex: String { map { String(format: "%02X", $0) }.joined() }
+}
+
+enum Keychain {
+    private static func query(_ key: String) -> [CFString: Any] {
+        [kSecClass: kSecClassGenericPassword, kSecAttrService: "com.skistudio.play", kSecAttrAccount: key]
+    }
+
+    static func read(_ key: String) -> Data? {
+        var q = query(key)
+        q[kSecReturnData] = true
+        q[kSecMatchLimit] = kSecMatchLimitOne
+        var out: AnyObject?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess else { return nil }
+        return out as? Data
+    }
+
+    static func write(_ key: String, _ data: Data) {
+        delete(key)
+        var q = query(key)
+        q[kSecValueData] = data
+        q[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
+        SecItemAdd(q as CFDictionary, nil)
+    }
+
+    static func delete(_ key: String) {
+        SecItemDelete(query(key) as CFDictionary)
+    }
 }
