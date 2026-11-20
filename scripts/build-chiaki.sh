@@ -22,7 +22,7 @@ cd "$WORK"
 # and the protobuf module that nanopb's generator needs.
 if [ ! -x "$WORK/venv/bin/cmake" ]; then
   python3 -m venv "$WORK/venv"
-  "$WORK/venv/bin/pip" install -q "cmake>=3.28,<4" "protobuf<6" grpcio-tools
+  "$WORK/venv/bin/pip" install -q "cmake>=3.28,<4" "protobuf<6"
 fi
 export PATH="$WORK/venv/bin:$PATH"
 command -v protoc || brew install protobuf
@@ -94,6 +94,8 @@ git -C chiaki-ng submodule update -q --init --depth 1 third-party/nanopb third-p
 
 # chiaki forces the deployment target to the build Mac's macOS version; skip that for iOS.
 sed -i '' 's/^if(APPLE)$/if(APPLE AND NOT IOS)/' chiaki-ng/CMakeLists.txt
+# libevent lookup calls pkg_search_module without initializing pkg-config first.
+sed -i '' 's/find_program(PKG_CONFIG_EXECUTABLE pkg-config)/find_package(PkgConfig)/' chiaki-ng/lib/CMakeLists.txt
 
 export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
 cmake -S chiaki-ng -B chiaki-ng/build-ios "${IOS_CMAKE[@]}" \
