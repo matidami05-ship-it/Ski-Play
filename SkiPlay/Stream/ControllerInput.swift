@@ -184,8 +184,7 @@ final class ControllerInput: ObservableObject {
                 }
             } else if let ds4 = gp as? GCDualShockGamepad {
                 on(ds4.touchpadButton, Button.touchpad)
-                let p = ds4.touchpadPrimary
-                if p.xAxis.value != 0 || p.yAxis.value != 0 {
+                if let p = ds4.touchpadPrimary as GCControllerDirectionPad?, p.xAxis.value != 0 || p.yAxis.value != 0 {
                     touch = SIMD2((p.xAxis.value + 1) / 2, (1 - p.yAxis.value) / 2)
                 }
             }
