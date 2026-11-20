@@ -1,0 +1,9 @@
+build/
+*.xcodeproj/
+Payload/
+*.ipa
+.DS_Store
+.deps/
+Vendor/
+SkiPlay/Info.plist
+SkiPlay/SkiPlay.entitlements
